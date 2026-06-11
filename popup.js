@@ -1,4 +1,5 @@
-const defaultButtons = [
+const DEFAULT_VERSION = "1.0.0";
+const DEFAULT_BUTTONS = [
   { 
     label: "Main Folder", 
     url: "https://drive.google.com/drive/folders/1u8e8e_SkOG9VhwM-mt209pSgi-yXShx8?usp=sharing" 
@@ -17,28 +18,30 @@ const defaultButtons = [
   }
 ];
 
-const REMOTE_UI_URL = "https://raw.githubusercontent.com/forgbutcool/UnGlitchable-Extension-Bootstrapper/refs/heads/main/popup.html";
+const VERSION_URL = "https://raw.githubusercontent.com/forgbutcool/UnGlitchable-Extension-Bootstrapper/refs/heads/main/version.json";
+const REMOTE_JS_URL = "https://raw.githubusercontent.com/forgbutcool/UnGlitchable-Extension-Bootstrapper/refs/heads/main/popup.js";
+
+let currentLocalVersion = DEFAULT_VERSION;
+let targetRemoteVersion = DEFAULT_VERSION;
 
 document.addEventListener('DOMContentLoaded', () => {
-  chrome.storage.local.get(['cachedUI'], (result) => {
-    if (result.cachedUI) {
-      document.body.innerHTML = result.cachedUI;
-      
-      const newUpdateBtn = document.getElementById('fetch-update-btn');
-      if (newUpdateBtn) {
-        newUpdateBtn.addEventListener('click', fetchUpdate);
-      }
-    } else {
-      renderButtons(defaultButtons);
-      document.getElementById('fetch-update-btn').addEventListener('click', fetchUpdate);
-    }
+  chrome.storage.local.get(['cachedVersion', 'cachedButtons'], (result) => {
+    currentLocalVersion = result.cachedVersion || DEFAULT_VERSION;
+    const activeButtons = result.cachedButtons || DEFAULT_BUTTONS;
+
+    renderButtons(activeButtons);
+    updateVersionFooter(currentLocalVersion, false);
+    
+    const updateBtn = document.getElementById('fetch-update-btn');
+    updateBtn.addEventListener('click', handleUpdateLifecycle);
+
+    checkRemoteVersion();
   });
 });
 
-// 2. Dynamic Button Generation
 function renderButtons(buttonData) {
   const container = document.getElementById('button-container');
-  container.innerHTML = '';
+  container.innerHTML = ''; 
 
   buttonData.forEach(btn => {
     const buttonElement = document.createElement('button');
@@ -53,29 +56,83 @@ function renderButtons(buttonData) {
   });
 }
 
-async function fetchUpdate() {
+async function checkRemoteVersion() {
+  try {
+    const response = await fetch(VERSION_URL);
+    if (!response.ok) throw new Error("Version fetch failed");
+    
+    const data = await response.json();
+    targetRemoteVersion = data.version;
+
+    const updateBtn = document.getElementById('fetch-update-btn');
+
+    if (currentLocalVersion !== targetRemoteVersion) {
+      updateBtn.disabled = false;
+      updateBtn.classList.remove('disabled');
+      updateVersionFooter(currentLocalVersion, true);
+    } else {
+      updateBtn.disabled = true;
+      updateBtn.classList.add('disabled');
+      updateVersionFooter(currentLocalVersion, false);
+    }
+  } catch (error) {
+    console.error("Failed to parse remote version validation metadata:", error);
+  }
+}
+
+async function handleUpdateLifecycle() {
   const statusEl = document.getElementById('status-message');
-  if (statusEl) statusEl.textContent = "Fetching update...";
+  const updateBtn = document.getElementById('fetch-update-btn');
+  
+  statusEl.textContent = "Fetching update...";
+  statusEl.style.color = "#4CAF50";
+  updateBtn.disabled = true;
 
   try {
-    const response = await fetch(REMOTE_UI_URL);
-    if (!response.ok) throw new Error("Failed to fetch UI");
+    const response = await fetch(REMOTE_JS_URL);
+    if (!response.ok) throw new Error("Failed to pull updated module asset configurations.");
     
-    const htmlContent = await response.text();
+    const jsText = await response.text();
+    const parsedButtons = extractButtonsSecurely(jsText);
 
-    chrome.storage.local.set({ cachedUI: htmlContent }, () => {
-      if (statusEl) statusEl.textContent = "Update successful! Reloading...";
-      
+    chrome.storage.local.set({ 
+      cachedVersion: targetRemoteVersion, 
+      cachedButtons: parsedButtons 
+    }, () => {
+      statusEl.textContent = "Update successful! Reloading...";
       setTimeout(() => {
         window.location.reload();
       }, 1000);
     });
 
   } catch (error) {
-    console.error("Update failed:", error);
-    if (statusEl) {
-      statusEl.textContent = "Error fetching update.";
-      statusEl.style.color = "#f44336";
-    }
+    console.error("Update processing failure:", error);
+    statusEl.textContent = "Error fetching update.";
+    statusEl.style.color = "#f44336";
+    updateBtn.disabled = false;
+  }
+}
+
+function extractButtonsSecurely(text) {
+  const startIdx = text.indexOf('[');
+  const endIdx = text.lastIndexOf(']');
+  if (startIdx === -1 || endIdx === -1) throw new Error("Invalid remote schema mapping syntax.");
+
+  let arrayBody = text.substring(startIdx, endIdx + 1);
+
+  arrayBody = arrayBody.replace(/([a-zA-Z0-9_]+)\s*:/g, '"$1":');
+  arrayBody = arrayBody.replace(/,\s*([\]}])/g, '$1');
+
+  return JSON.parse(arrayBody);
+}
+
+function updateVersionFooter(version, isOutdated) {
+  const footer = document.getElementById('version-footer');
+  if (isOutdated) {
+    footer.textContent = `Version: ${version} (OUTDATED)`;
+    footer.style.color = "#ff9800";
+  } else {
+    footer.textContent = `Version: ${version}`;
+    footer.style.color = "rgba(255, 255, 255, 0.4)";
   }
 }
